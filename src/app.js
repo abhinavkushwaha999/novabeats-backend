@@ -7,7 +7,7 @@ const musicRoutes = require("./routes/music.routes");
 
 const app = express();
 
-// ✅ DB connection cached for serverless — no separate db.js file needed
+// ✅ DB connection cached for serverless
 let isConnected = false;
 
 async function connectDB() {
@@ -21,24 +21,29 @@ async function connectDB() {
 }
 
 app.get("/", (req, res) => {
-  res.send("Backend working ✅");
+  res.send("NovaBeats Backend working ✅");
 });
 
 app.get("/api", (req, res) => {
-  res.json({ status: "ok", message: "Sona backend is running 🎵" });
+  res.json({ status: "ok", message: "NovaBeats backend is running 🎵" });
 });
 
-// ✅ CORS
+// ✅ CORS — updated with new novabeats domains
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
+
+    // Strip trailing slash
     const cleanOrigin = origin.replace(/\/$/, "");
+
     const allowedOrigins = [
-      "https://music-sona-frontend.vercel.app",
+      "https://novabeats.vercel.app",          // ✅ NEW frontend domain
+      "https://music-sona-frontend.vercel.app", // old domain (keep during transition)
       "http://localhost:5500",
       "http://127.0.0.1:5500",
       "http://localhost:3000",
     ];
+
     if (allowedOrigins.includes(cleanOrigin)) return callback(null, true);
     return callback(new Error("Not allowed by CORS: " + origin));
   },

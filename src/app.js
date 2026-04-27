@@ -1,15 +1,15 @@
-const express = require("express");
+const express      = require("express");
 const cookieParser = require("cookie-parser");
-const cors = require("cors");
-const mongoose = require("mongoose");
-const authRoutes = require("./routes/auth.routes");
-const musicRoutes = require("./routes/music.routes");
+const cors         = require("cors");
+const mongoose     = require("mongoose");
+const authRoutes   = require("./routes/auth.routes");
+const musicRoutes  = require("./routes/music.routes");
+const socialRoutes = require("./routes/social.routes");
 
 const app = express();
 
 // ✅ DB connection cached for serverless
 let isConnected = false;
-
 async function connectDB() {
   if (isConnected) return;
   await mongoose.connect(process.env.MONGO_URI, {
@@ -20,30 +20,21 @@ async function connectDB() {
   console.log("DB connected ✅");
 }
 
-app.get("/", (req, res) => {
-  res.send("NovaBeats Backend working ✅");
-});
+app.get("/", (req, res) => res.send("NovaBeats Backend working ✅"));
+app.get("/api", (req, res) => res.json({ status: "ok", message: "NovaBeats backend is running 🎵" }));
 
-app.get("/api", (req, res) => {
-  res.json({ status: "ok", message: "NovaBeats backend is running 🎵" });
-});
-
-// ✅ CORS — updated with new novabeats domains
+// ✅ CORS
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
-
-    // Strip trailing slash
     const cleanOrigin = origin.replace(/\/$/, "");
-
     const allowedOrigins = [
-      "https://novabeats.vercel.app",          // ✅ NEW frontend domain
-      "https://music-sona-frontend.vercel.app", // old domain (keep during transition)
+      "https://novabeats.vercel.app",
+      "https://music-sona-frontend.vercel.app",
       "http://localhost:5500",
       "http://127.0.0.1:5500",
       "http://localhost:3000",
     ];
-
     if (allowedOrigins.includes(cleanOrigin)) return callback(null, true);
     return callback(new Error("Not allowed by CORS: " + origin));
   },
@@ -54,18 +45,17 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(cookieParser());
 
-// ✅ Connect DB on every request (safe for Vercel serverless)
+// ✅ Connect DB on every request
 app.use(async (req, res, next) => {
-  try {
-    await connectDB();
-    next();
-  } catch (err) {
+  try { await connectDB(); next(); }
+  catch (err) {
     console.error("DB Error:", err.message);
     res.status(503).json({ message: "Database unavailable: " + err.message });
   }
 });
 
-app.use('/api/auth', authRoutes);
-app.use('/api/music', musicRoutes);
+app.use("/api/auth",   authRoutes);
+app.use("/api/music",  musicRoutes);
+app.use("/api/social", socialRoutes);   // ✅ NEW
 
 module.exports = app;

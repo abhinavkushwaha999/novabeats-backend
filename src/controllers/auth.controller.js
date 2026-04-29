@@ -87,24 +87,33 @@ async function registerUser(req, res) {
     });
 
     if (existing) {
-      if (existing.username === username.toLowerCase()) {
+      // If the existing account has the same username (verified or not) → reject
+      if (existing.username === username.toLowerCase() && existing.isVerified) {
         return res.status(409).json({ message: "Username is already taken. Please choose another." });
       }
       if (existing.email === email.toLowerCase()) {
-        // If account exists but not verified, resend OTP
         if (!existing.isVerified) {
-          const otp = generateOTP();
-          existing.otp       = otp;
-          existing.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
-          await existing.save();
-          await sendOTPEmail(existing.email, existing.name || existing.username, otp, "verify");
-          return res.status(200).json({
-            message: "Account already exists but not verified. New OTP sent to your email.",
-            userId: existing._id,
-            email:  existing.email,
-          });
+          // Stale unverified account older than 24 h → delete and let registration proceed fresh
+          const staleThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
+          if (existing.createdAt < staleThreshold) {
+            await userModel.findByIdAndDelete(existing._id);
+            // fall through to create a fresh account below
+          } else {
+            // Still within 24 h — just resend OTP
+            const otp = generateOTP();
+            existing.otp       = otp;
+            existing.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
+            await existing.save();
+            try { await sendOTPEmail(existing.email, existing.name || existing.username, otp, "verify"); } catch {}
+            return res.status(200).json({
+              message: "Account already exists but not verified. New OTP sent to your email.",
+              userId: existing._id,
+              email:  existing.email,
+            });
+          }
+        } else {
+          return res.status(409).json({ message: "Email is already registered. Please sign in." });
         }
-        return res.status(409).json({ message: "Email is already registered. Please sign in." });
       }
     }
 
@@ -215,6 +224,7 @@ async function resendOTP(req, res) {
     const otp = generateOTP();
     user.otp       = otp;
     user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
+    if (!user.resetMode) user.resetMode = false; // ensure it's explicitly false for registration resends
     await user.save();
 
     const type = user.resetMode ? "forgot" : "verify";

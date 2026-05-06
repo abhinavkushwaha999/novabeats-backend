@@ -8,7 +8,7 @@ const socialRoutes = require("./routes/social.routes");
 
 const app = express();
 
-// ✅ DB connection cached for serverless
+// ── DB connection cached for serverless ───────────────────────
 let isConnected = false;
 async function connectDB() {
   if (isConnected) return;
@@ -20,54 +20,56 @@ async function connectDB() {
   console.log("DB connected ✅");
 }
 
+// ── Health check ──────────────────────────────────────────────
 app.get("/", (req, res) => res.send("NovaBeats Backend working ✅"));
 app.get("/api", (req, res) => res.json({ status: "ok", message: "NovaBeats backend is running 🎵" }));
 
-// ✅ CORS — fixed to handle all cases including preflight
-app.use(cors({
+// ── CORS ──────────────────────────────────────────────────────
+const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, curl, Postman)
+    // Allow no-origin requests (Postman, mobile apps, server-to-server)
     if (!origin) return callback(null, true);
 
-    const cleanOrigin = origin.replace(/\/$/, "").toLowerCase();
+    const o = origin.replace(/\/$/, "").toLowerCase();
 
-    // ✅ Allow any vercel.app subdomain (covers preview URLs too)
-    if (cleanOrigin.endsWith(".vercel.app")) return callback(null, true);
+    // Allow any *.vercel.app domain (covers preview + production URLs)
+    if (o.endsWith(".vercel.app")) return callback(null, true);
 
-    // ✅ Allow localhost for development
+    // Allow local development
     if (
-      cleanOrigin === "http://localhost:5500" ||
-      cleanOrigin === "http://127.0.0.1:5500" ||
-      cleanOrigin === "http://localhost:3000" ||
-      cleanOrigin === "http://localhost:5173"
+      o === "http://localhost:5500" ||
+      o === "http://127.0.0.1:5500" ||
+      o === "http://localhost:3000" ||
+      o === "http://localhost:5173"
     ) return callback(null, true);
 
-    console.warn("CORS blocked:", origin);
-    return callback(new Error("Not allowed by CORS: " + origin));
+    return callback(new Error("CORS blocked: " + origin));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "Cookie"],
-  exposedHeaders: ["Set-Cookie"],
-}));
+};
 
-// ✅ Handle preflight OPTIONS requests explicitly
-// Note: "*" breaks in newer path-to-regexp versions — use "(.*)" instead
-app.options("(.*)", cors());
+// Apply CORS middleware — handles OPTIONS preflight automatically in Express 4
+app.use(cors(corsOptions));
 
+// ── Body parsing ──────────────────────────────────────────────
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(cookieParser());
 
-// ✅ Connect DB on every request (safe for Vercel serverless)
+// ── Connect DB on every request ───────────────────────────────
 app.use(async (req, res, next) => {
-  try { await connectDB(); next(); }
-  catch (err) {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
     console.error("DB Error:", err.message);
     res.status(503).json({ message: "Database unavailable: " + err.message });
   }
 });
 
+// ── Routes ────────────────────────────────────────────────────
 app.use("/api/auth",   authRoutes);
 app.use("/api/music",  musicRoutes);
 app.use("/api/social", socialRoutes);

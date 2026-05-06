@@ -52,7 +52,8 @@ app.use(cors({
 }));
 
 // ✅ Handle preflight OPTIONS requests explicitly
-app.options("*", cors());
+// Note: "*" breaks in newer path-to-regexp versions — use "(.*)" instead
+app.options("(.*)", cors());
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));

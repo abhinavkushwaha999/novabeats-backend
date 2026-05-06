@@ -23,29 +23,42 @@ async function connectDB() {
 app.get("/", (req, res) => res.send("NovaBeats Backend working ✅"));
 app.get("/api", (req, res) => res.json({ status: "ok", message: "NovaBeats backend is running 🎵" }));
 
-// ✅ CORS
+// ✅ CORS — fixed to handle all cases including preflight
 app.use(cors({
   origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, Postman)
     if (!origin) return callback(null, true);
-    const cleanOrigin = origin.replace(/\/$/, "");
-    const allowedOrigins = [
-      "https://novabeats.vercel.app",
-      "https://music-sona-frontend.vercel.app",
-      "http://localhost:5500",
-      "http://127.0.0.1:5500",
-      "http://localhost:3000",
-    ];
-    if (allowedOrigins.includes(cleanOrigin)) return callback(null, true);
+
+    const cleanOrigin = origin.replace(/\/$/, "").toLowerCase();
+
+    // ✅ Allow any vercel.app subdomain (covers preview URLs too)
+    if (cleanOrigin.endsWith(".vercel.app")) return callback(null, true);
+
+    // ✅ Allow localhost for development
+    if (
+      cleanOrigin === "http://localhost:5500" ||
+      cleanOrigin === "http://127.0.0.1:5500" ||
+      cleanOrigin === "http://localhost:3000" ||
+      cleanOrigin === "http://localhost:5173"
+    ) return callback(null, true);
+
+    console.warn("CORS blocked:", origin);
     return callback(new Error("Not allowed by CORS: " + origin));
   },
   credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Cookie"],
+  exposedHeaders: ["Set-Cookie"],
 }));
+
+// ✅ Handle preflight OPTIONS requests explicitly
+app.options("*", cors());
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(cookieParser());
 
-// ✅ Connect DB on every request
+// ✅ Connect DB on every request (safe for Vercel serverless)
 app.use(async (req, res, next) => {
   try { await connectDB(); next(); }
   catch (err) {
@@ -56,6 +69,6 @@ app.use(async (req, res, next) => {
 
 app.use("/api/auth",   authRoutes);
 app.use("/api/music",  musicRoutes);
-app.use("/api/social", socialRoutes);   // ✅ NEW
+app.use("/api/social", socialRoutes);
 
 module.exports = app;

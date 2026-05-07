@@ -10,6 +10,22 @@ const cookieOptions = {
   maxAge:   7 * 24 * 60 * 60 * 1000,
 };
 
+// ── Password strength ─────────────────────────────────────────
+// Requires: min 6 chars, at least 1 uppercase letter, at least 1 digit
+// Examples that PASS:  "Hello1"  "MyPass9"  "Secure2024"
+// Examples that FAIL:  "hello1"  "HELLO1" (no digit)  "hello" (too short)
+const PASSWORD_REGEX = /^(?=.*[A-Z])(?=.*\d).{6,}$/;
+
+function validatePassword(password) {
+  if (!password || password.length < 6) {
+    return "Password must be at least 6 characters.";
+  }
+  if (!PASSWORD_REGEX.test(password)) {
+    return "Password must contain at least one uppercase letter and one number.";
+  }
+  return null; // null = valid
+}
+
 function getTransporter() {
   return nodemailer.createTransport({
     service: "gmail",
@@ -56,7 +72,6 @@ async function sendOTPEmail(email, name, otp, type = "verify") {
 
 // ══════════════════════════════════════════════════════════════
 // REGISTER
-// ✅ NO cookie here — user CANNOT enter app without OTP
 // ══════════════════════════════════════════════════════════════
 async function registerUser(req, res) {
   try {
@@ -68,9 +83,10 @@ async function registerUser(req, res) {
     if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
       return res.status(400).json({ message: "Username: 3-20 chars, letters/numbers/underscores only" });
     }
-    if (password.length < 6) {
-      return res.status(400).json({ message: "Password must be at least 6 characters" });
-    }
+
+    // ✅ IMPROVED: full password strength check (was length >= 6 only)
+    const pwdError = validatePassword(password);
+    if (pwdError) return res.status(400).json({ message: pwdError });
 
     const existing = await userModel.findOne({
       $or: [{ username: username.toLowerCase() }, { email: email.toLowerCase() }]
@@ -104,7 +120,7 @@ async function registerUser(req, res) {
       email:      email.toLowerCase(),
       password:   hash,
       role,
-      isVerified: false,   // ← CANNOT login until this is true
+      isVerified: false,
       otp,
       otpExpiry:  new Date(Date.now() + 10 * 60 * 1000),
     });
@@ -113,7 +129,6 @@ async function registerUser(req, res) {
       console.error("Email failed:", e.message);
     }
 
-    // ✅ NO cookie, NO token — just userId and email for OTP screen
     return res.status(201).json({
       message: "OTP sent to your email. Please verify to continue.",
       userId:  user._id,
@@ -127,7 +142,7 @@ async function registerUser(req, res) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// VERIFY OTP — only place that issues cookie for new users
+// VERIFY OTP
 // ══════════════════════════════════════════════════════════════
 async function verifyOTP(req, res) {
   try {
@@ -150,7 +165,6 @@ async function verifyOTP(req, res) {
     user.otpExpiry  = null;
     await user.save();
 
-    // ✅ Cookie only issued here — after OTP confirmed
     const token = jwt.sign(
       { id: user._id, role: user.role },
       process.env.JWT_SECRET,
@@ -271,9 +285,10 @@ async function resetPassword(req, res) {
     if (!resetToken || !newPassword) {
       return res.status(400).json({ message: "All fields required" });
     }
-    if (newPassword.length < 6) {
-      return res.status(400).json({ message: "Password must be at least 6 characters" });
-    }
+
+    // ✅ IMPROVED: full strength check on reset too
+    const pwdError = validatePassword(newPassword);
+    if (pwdError) return res.status(400).json({ message: pwdError });
 
     let decoded;
     try { decoded = jwt.verify(resetToken, process.env.JWT_SECRET); }
@@ -298,7 +313,7 @@ async function resetPassword(req, res) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// LOGIN — ✅ STRICTLY blocks unverified accounts
+// LOGIN
 // ══════════════════════════════════════════════════════════════
 async function loginUser(req, res) {
   try {
@@ -314,7 +329,6 @@ async function loginUser(req, res) {
     const user = await userModel.findOne(query);
     if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
-    // ✅ THIS IS THE KEY CHECK — unverified = blocked, new OTP sent
     if (!user.isVerified) {
       const otp = generateOTP();
       user.otp       = otp;
@@ -367,6 +381,66 @@ async function logoutUser(req, res) {
   return res.status(200).json({ message: "Logged out successfully" });
 }
 
+// ══════════════════════════════════════════════════════════════
+// UPDATE PROFILE  (NEW)  PATCH /api/auth/profile
+// ══════════════════════════════════════════════════════════════
+// Allowed fields: name, bio, avatar (URL string)
+// Username and email are intentionally NOT changeable here
+// to avoid collisions with unique indexes without extra validation.
+async function updateProfile(req, res) {
+  try {
+    const { name, bio, avatar } = req.body;
+    const userId = req.user.id;
+
+    // Build update object — only include fields that were sent
+    const updates = {};
+
+    if (name !== undefined) {
+      const trimmed = String(name).trim();
+      if (!trimmed || trimmed.length < 2 || trimmed.length > 50) {
+        return res.status(400).json({ message: "Name must be 2–50 characters." });
+      }
+      updates.name = trimmed;
+    }
+
+    if (bio !== undefined) {
+      const trimmed = String(bio).trim();
+      if (trimmed.length > 300) {
+        return res.status(400).json({ message: "Bio cannot exceed 300 characters." });
+      }
+      updates.bio = trimmed;
+    }
+
+    if (avatar !== undefined) {
+      const trimmed = String(avatar).trim();
+      // Basic URL check — must start with http/https or be empty string (clear avatar)
+      if (trimmed && !/^https?:\/\/.+/.test(trimmed)) {
+        return res.status(400).json({ message: "Avatar must be a valid http/https URL." });
+      }
+      updates.avatar = trimmed;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ message: "No valid fields provided to update." });
+    }
+
+    const user = await userModel.findByIdAndUpdate(
+      userId,
+      { $set: updates },
+      { new: true, runValidators: true }
+    ).select("id name username email role bio avatar");
+
+    return res.json({
+      message: "Profile updated successfully.",
+      user,
+    });
+
+  } catch (err) {
+    console.error("updateProfile error:", err);
+    res.status(500).json({ message: "Server error: " + err.message });
+  }
+}
+
 module.exports = {
   registerUser,
   verifyOTP,
@@ -376,4 +450,5 @@ module.exports = {
   resetPassword,
   loginUser,
   logoutUser,
+  updateProfile,
 };

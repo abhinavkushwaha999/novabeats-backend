@@ -4,20 +4,28 @@ const ImageKit   = require("@imagekit/nodejs");
 const crypto     = require("crypto");
 require("../models/user.model");
 
-// ✅ ImageKit is initialized INSIDE functions — not at module load time
-// This prevents a server crash if env vars are missing on startup
+// ── Pagination helper ─────────────────────────────────────────
+// Returns { page, limit, skip } from query params.
+// Clamps page >= 1, limit between 1 and 50.
+function getPagination(query) {
+  const page  = Math.max(1, parseInt(query.page)  || 1);
+  const limit = Math.min(50, Math.max(1, parseInt(query.limit) || 10));
+  const skip  = (page - 1) * limit;
+  return { page, limit, skip };
+}
+
 function getImageKit() {
   if (!process.env.IMAGEKIT_PRIVATE_KEY) {
     throw new Error("IMAGEKIT_PRIVATE_KEY is not set in environment variables");
   }
   return new ImageKit({
-    privateKey:   process.env.IMAGEKIT_PRIVATE_KEY,
-    publicKey:    process.env.IMAGEKIT_PUBLIC_KEY,
-    urlEndpoint:  process.env.IMAGEKIT_URL_ENDPOINT,
+    privateKey:  process.env.IMAGEKIT_PRIVATE_KEY,
+    publicKey:   process.env.IMAGEKIT_PUBLIC_KEY,
+    urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT,
   });
 }
 
-// ✅ Get ImageKit auth params for direct browser upload
+// ── ImageKit auth params for browser upload ───────────────────
 async function getImageKitAuth(req, res) {
   try {
     const token  = crypto.randomUUID();
@@ -39,7 +47,7 @@ async function getImageKitAuth(req, res) {
   }
 }
 
-// ✅ Save track URL to DB after direct ImageKit upload
+// ── Save track URL after browser upload ──────────────────────
 async function saveTrack(req, res) {
   try {
     const { title, uri } = req.body;
@@ -53,7 +61,7 @@ async function saveTrack(req, res) {
   }
 }
 
-// ✅ Old upload route (fallback — uses server-side ImageKit upload)
+// ── Server-side upload (fallback) ────────────────────────────
 async function createMusic(req, res) {
   try {
     const { title } = req.body;
@@ -74,11 +82,12 @@ async function createMusic(req, res) {
   }
 }
 
+// ── Create album ──────────────────────────────────────────────
 async function createAlbum(req, res) {
   try {
     const { title, musics } = req.body;
-    if (!title)              return res.status(400).json({ message: "Album title is required" });
-    if (!musics?.length)     return res.status(400).json({ message: "Select at least one track" });
+    if (!title)          return res.status(400).json({ message: "Album title is required" });
+    if (!musics?.length) return res.status(400).json({ message: "Select at least one track" });
     const album = await albumModel.create({ title, artist: req.user.id, musics });
     res.status(201).json({ message: "Album Created Successfully", album });
   } catch (err) {
@@ -86,27 +95,116 @@ async function createAlbum(req, res) {
   }
 }
 
+// ── Get all music  (paginated) ────────────────────────────────
+// GET /api/music?page=1&limit=10
+// Response includes: musics[], total, page, totalPages
 async function getAllMusics(req, res) {
   try {
-    const musics = await musicModel.find().limit(20).populate("artist", "username");
-    res.status(200).json({ message: "Musics fetched Successfully", musics });
+    const { page, limit, skip } = getPagination(req.query);
+
+    const [musics, total] = await Promise.all([
+      musicModel
+        .find()
+        .sort({ createdAt: -1 })  // newest first
+        .skip(skip)
+        .limit(limit)
+        .populate("artist", "username"),
+      musicModel.countDocuments(),
+    ]);
+
+    res.status(200).json({
+      message: "Musics fetched successfully",
+      musics,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        hasNext: page * limit < total,
+        hasPrev: page > 1,
+      },
+    });
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch music: " + err.message });
   }
 }
 
+// ── Search music  (NEW) ───────────────────────────────────────
+// GET /api/music/search?q=keyword&page=1&limit=10
+// Searches title (text) and artist username via $regex.
+// Uses a case-insensitive regex — for production at scale,
+// add a MongoDB text index on `title` and switch to $text/$search.
+async function searchMusic(req, res) {
+  try {
+    const q = String(req.query.q || "").trim();
+
+    if (!q || q.length < 1) {
+      return res.status(400).json({ message: "Search query (q) is required." });
+    }
+    if (q.length > 100) {
+      return res.status(400).json({ message: "Query too long (max 100 chars)." });
+    }
+
+    const { page, limit, skip } = getPagination(req.query);
+
+    // Sanitize for regex (escape special regex characters)
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex   = new RegExp(escaped, "i");
+
+    // First find matching artist IDs by username
+    const User = require("../models/user.model");
+    const matchingArtists = await User.find({ username: regex }).select("_id");
+    const artistIds = matchingArtists.map(a => a._id);
+
+    const filter = {
+      $or: [
+        { title:  regex },
+        { artist: { $in: artistIds } },
+      ],
+    };
+
+    const [musics, total] = await Promise.all([
+      musicModel
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate("artist", "username"),
+      musicModel.countDocuments(filter),
+    ]);
+
+    res.status(200).json({
+      message: "Search results",
+      query: q,
+      musics,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        hasNext: page * limit < total,
+        hasPrev: page > 1,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Search failed: " + err.message });
+  }
+}
+
+// ── Get all albums ────────────────────────────────────────────
 async function getAllAlbums(req, res) {
   try {
     const albums = await albumModel
       .find()
       .select("title artist")
       .populate("artist", "username email");
-    res.status(200).json({ message: "Albums fetched Successfully", albums });
+    res.status(200).json({ message: "Albums fetched successfully", albums });
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch albums: " + err.message });
   }
 }
 
+// ── Get album by ID ───────────────────────────────────────────
 async function getAlbumById(req, res) {
   try {
     const album = await albumModel
@@ -114,7 +212,7 @@ async function getAlbumById(req, res) {
       .populate("artist", "username email")
       .populate("musics");
     if (!album) return res.status(404).json({ message: "Album not found" });
-    res.status(200).json({ message: "Album fetched Successfully", album });
+    res.status(200).json({ message: "Album fetched successfully", album });
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch album: " + err.message });
   }
@@ -126,6 +224,7 @@ module.exports = {
   createMusic,
   createAlbum,
   getAllMusics,
+  searchMusic,
   getAllAlbums,
   getAlbumById,
 };

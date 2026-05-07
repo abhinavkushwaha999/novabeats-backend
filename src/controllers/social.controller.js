@@ -2,6 +2,14 @@ const userModel    = require("../models/user.model");
 const musicModel   = require("../models/music.model");
 const commentModel = require("../models/comment.model");
 
+// ── Pagination helper (same pattern as music.controller) ──────
+function getPagination(query) {
+  const page  = Math.max(1, parseInt(query.page)  || 1);
+  const limit = Math.min(50, Math.max(1, parseInt(query.limit) || 20));
+  const skip  = (page - 1) * limit;
+  return { page, limit, skip };
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // FOLLOW / UNFOLLOW ARTIST
 // ═══════════════════════════════════════════════════════════════════════
@@ -21,12 +29,10 @@ async function followArtist(req, res) {
     const isFollowing = user.following.includes(artistId);
 
     if (isFollowing) {
-      // Unfollow
       await userModel.findByIdAndUpdate(userId,   { $pull: { following: artistId } });
       await userModel.findByIdAndUpdate(artistId, { $pull: { followers: userId } });
       return res.json({ message: "Unfollowed", following: false, followers: artist.followers.length - 1 });
     } else {
-      // Follow
       await userModel.findByIdAndUpdate(userId,   { $addToSet: { following: artistId } });
       await userModel.findByIdAndUpdate(artistId, { $addToSet: { followers: userId } });
       return res.json({ message: "Followed", following: true, followers: artist.followers.length + 1 });
@@ -155,19 +161,35 @@ async function addComment(req, res) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// GET COMMENTS FOR A TRACK
+// GET COMMENTS FOR A TRACK  (paginated)
+// GET /api/social/comment/:musicId?page=1&limit=20
 // ═══════════════════════════════════════════════════════════════════════
 async function getComments(req, res) {
   try {
     const { musicId } = req.params;
+    const { page, limit, skip } = getPagination(req.query);
 
-    const comments = await commentModel
-      .find({ music: musicId })
-      .populate("user", "username avatar role")
-      .sort({ createdAt: -1 })
-      .limit(50);
+    const [comments, total] = await Promise.all([
+      commentModel
+        .find({ music: musicId })
+        .populate("user", "username avatar role")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      commentModel.countDocuments({ music: musicId }),
+    ]);
 
-    res.json({ comments });
+    res.json({
+      comments,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        hasNext: page * limit < total,
+        hasPrev: page > 1,
+      },
+    });
 
   } catch (err) {
     res.status(500).json({ message: "Server error: " + err.message });
@@ -193,18 +215,37 @@ async function deleteComment(req, res) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// GET MY FOLLOWING FEED (tracks from artists I follow)
+// GET MY FOLLOWING FEED  (paginated)
+// GET /api/social/feed?page=1&limit=20
 // ═══════════════════════════════════════════════════════════════════════
 async function getFeed(req, res) {
   try {
+    const { page, limit, skip } = getPagination(req.query);
     const user = await userModel.findById(req.user.id).select("following");
-    const feed = await musicModel
-      .find({ artist: { $in: user.following } })
-      .populate("artist", "username")
-      .sort({ createdAt: -1 })
-      .limit(20);
 
-    res.json({ feed });
+    const filter = { artist: { $in: user.following } };
+
+    const [feed, total] = await Promise.all([
+      musicModel
+        .find(filter)
+        .populate("artist", "username")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      musicModel.countDocuments(filter),
+    ]);
+
+    res.json({
+      feed,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        hasNext: page * limit < total,
+        hasPrev: page > 1,
+      },
+    });
   } catch (err) {
     res.status(500).json({ message: "Server error: " + err.message });
   }
